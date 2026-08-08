@@ -34,15 +34,21 @@ cp config.yaml.example config.yaml
 cp .env.example .env
 set -a; . ./.env; set +a
 cargo run --release
+
+# simple query
 curl 'http://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id&sysparm_limit=100000000'
+
+# more complex query
+curl 'http://192.168.1.216:3030/api/now/table/cmdb_ci_computer?sysparm_display_value=true&sysparm_exclude_reference_link=true&sysparm_no_count=true&sysparm_fields=sys_id,sys_created_by,sys_updated_by,sys_updated_on,operational_status,short_description,mac_address,department,model_id&sysparm_query=ORDERBY%20sys_updated_on^mac_address%20ISNOTEMPTY'
 ```
 
 ## Docker
 
+Sample `.env` file is tailored for **1Password** as the credentials store. Sample commands use 1Passwords `op` utility to run securely:
+
 ```sh
 cp config.yaml.example config.yaml
-cp .env.example .env
-docker compose up --build
+op run --env-file .env -- docker compose up --build
 ```
 
 The runtime image is `scratch`. It contains the standard public CA bundle but no shell, package manager, or debugging tools. For a private CA, mount a PEM bundle and set `target.ca_bundle_path` to the mounted path.

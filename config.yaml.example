@@ -1,0 +1,28 @@
+# The proxy listens on plaintext HTTP. Do not expose this directly to the Internet.
+listen:
+  address: 0.0.0.0:3030
+
+target:
+  base_url: https://YOUR_SERVICENOW_INSTANCE.service-now.com
+  username_env: SERVICENOW_USERNAME
+  password_env: SERVICENOW_PASSWORD
+  timeout_seconds: 300
+  # Optional PEM CA bundle. In the container, mount one at this path if the
+  # upstream uses a private CA. The image already contains its normal CA set.
+  # ca_bundle_path: /etc/ssl/certs/custom-ca-bundle.pem
+
+# Choose exactly one pagination strategy per running proxy.
+pagination:
+  mode: offset
+  offset_parameter: sysparm_offset
+  page_size_parameter: sysparm_limit
+  start_offset: 0
+  page_size: 10
+
+response:
+  # RFC 6901 JSON Pointer to the array to consolidate.
+  array_path: /result
+  # terminate: close with an error if a later page fails
+  # complete: close the JSON document with data collected so far
+  error_policy: terminate
+

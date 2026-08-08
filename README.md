@@ -33,7 +33,7 @@ If authentication fails before the first page produces data, the proxy returns a
 cp config.yaml.example config.yaml
 cp .env.example .env
 set -a; . ./.env; set +a
-cargo run --release
+cargo run --release -- --config ./config.yaml
 
 # simple query
 curl 'http://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id&sysparm_limit=100000000'
@@ -41,6 +41,16 @@ curl 'http://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id
 # more complex query
 curl 'http://192.168.1.216:3030/api/now/table/cmdb_ci_computer?sysparm_display_value=true&sysparm_exclude_reference_link=true&sysparm_no_count=true&sysparm_fields=sys_id,sys_created_by,sys_updated_by,sys_updated_on,operational_status,short_description,mac_address,department,model_id&sysparm_query=ORDERBY%20sys_updated_on^mac_address%20ISNOTEMPTY'
 ```
+
+The binary defaults to `/etc/api-proxy/config.yaml` for the container image. When running it directly, point it at the local file with `-c` or `--config`:
+
+```sh
+cargo run --release -- --config /path/to/config.yaml
+# or, after building:
+./target/release/api-pagination-proxy --config /path/to/config.yaml
+```
+
+Run `cargo run -- --help` for the available CLI options.
 
 ## Docker
 

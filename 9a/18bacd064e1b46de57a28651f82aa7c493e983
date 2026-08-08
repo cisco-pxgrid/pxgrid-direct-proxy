@@ -1,0 +1,23 @@
+README.md
+  s_fe6d9bbff31a00::t_774bb36218f107 36,45-53
+  s_fe6d9bbff31a00::t_56800c4e5d4539 54
+src/main.rs
+  s_fe6d9bbff31a00::t_774bb36218f107 3,7-8,11,13,36-58
+  s_fe6d9bbff31a00::t_b68b6b9f1bc7c0 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "9a18bacd064e1b46de57a28651f82aa7c493e983",
+  "prompts": {},
+  "sessions": {
+    "s_fe6d9bbff31a00": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fe1b0-333d-7883-bcd1-6c5295523bb1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Einar Nilsen-Nygaard <einarnn@gmail.com>"
+    }
+  }
+}

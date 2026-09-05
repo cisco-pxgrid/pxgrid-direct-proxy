@@ -1,0 +1,27 @@
+Cargo.lock
+  s_84dcdd166cfb85::t_55de12370866b0 40-41,45,47,52,59-67,90-118,171-192,273-281,300-305,317-328,375-390,844-849,856-865,893-898,1011-1023,1108,1133,1350-1379,1824-1832
+Cargo.toml
+  s_84dcdd166cfb85::t_5e31f75631f2d5 7-10,19
+crowdstrike-example/onpremservice.py
+  s_84dcdd166cfb85::t_a904b855f2578f 1-1028
+src/lib.rs
+  s_84dcdd166cfb85::t_7490e47e6a2a35 1-2,5,8,14-16,27-28,38-112,175-176,195-204,223,270,325-327,351,491-493,580-633,638-640,674-678,757,866-892
+src/main.rs
+  s_84dcdd166cfb85::t_2a1fa3ddf2e623 1-17,23-33,49-74,78-87,89-108,111-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "2208c0cc6f520367c668881efb8a0957ba34ee8c",
+  "prompts": {},
+  "sessions": {
+    "s_84dcdd166cfb85": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04cbd-9bfa-7a53-b239-6e74a95ff5c5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Einar Nilsen-Nygaard <einarnn@gmail.com>"
+    }
+  }
+}

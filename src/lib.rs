@@ -1,19 +1,19 @@
+pub mod crowdstrike;
+
 use axum::{
     body::Body,
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, HeaderValue, Request, StatusCode},
     response::Response,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use bytes::Bytes;
 use futures_util::{stream, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{
-    env,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -24,6 +24,8 @@ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub crowdstrike: Option<CrowdStrikeConfig>,
     pub listen: ListenConfig,
     pub target: TargetConfig,
     pub pagination: PaginationConfig,
@@ -33,13 +35,86 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListenConfig {
     pub address: String,
+    pub tls: TlsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    pub certificate_directory: String,
+    pub server_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrowdStrikeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub base_url: String,
+    #[serde(default = "default_crowdstrike_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_crowdstrike_page_size")]
+    pub page_size: u64,
+    #[serde(default = "default_crowdstrike_lookback_days")]
+    pub lookback_days: i64,
+    #[serde(default = "default_crowdstrike_rate_limit_retries")]
+    pub rate_limit_retries: u32,
+    #[serde(default)]
+    pub features: CrowdStrikeFeatures,
+}
+
+fn default_crowdstrike_timeout_seconds() -> u64 {
+    120
+}
+fn default_crowdstrike_page_size() -> u64 {
+    100
+}
+fn default_crowdstrike_lookback_days() -> i64 {
+    7
+}
+fn default_crowdstrike_rate_limit_retries() -> u32 {
+    3
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrowdStrikeFeatures {
+    #[serde(default = "default_true")]
+    pub zta: bool,
+    #[serde(default = "default_true")]
+    pub alerts: bool,
+    #[serde(default = "default_true")]
+    pub detections: bool,
+    #[serde(default = "default_true")]
+    pub incidents: bool,
+    #[serde(default = "default_true")]
+    pub vulnerability_summary: bool,
+    #[serde(default = "default_true")]
+    pub policies: bool,
+    #[serde(default = "default_true")]
+    pub host_groups: bool,
+    #[serde(default = "default_true")]
+    pub unmanaged_assets: bool,
+}
+
+impl Default for CrowdStrikeFeatures {
+    fn default() -> Self {
+        Self {
+            zta: true,
+            alerts: true,
+            detections: true,
+            incidents: true,
+            vulnerability_summary: true,
+            policies: true,
+            host_groups: true,
+            unmanaged_assets: true,
+        }
+    }
+}
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TargetConfig {
     pub base_url: String,
-    pub username_env: String,
-    pub password_env: String,
     #[serde(default)]
     pub ca_bundle_path: Option<String>,
     #[serde(default)]
@@ -97,6 +172,8 @@ pub enum ProxyError {
     MissingArray(String),
     #[error("JSON pointer {0:?} was not a string")]
     MissingNext(String),
+    #[error("next-page link points to a different origin: {0}")]
+    UnsafeNextLink(String),
 }
 
 pub async fn handle(request: Request<Body>, config: Arc<Config>, client: Client) -> Response {
@@ -115,6 +192,16 @@ pub async fn handle(request: Request<Body>, config: Arc<Config>, client: Client)
         return plain_error(StatusCode::METHOD_NOT_ALLOWED, "GET only");
     }
     let query = request.uri().query().unwrap_or("").to_string();
+    let authorization = match basic_authorization(request.headers()) {
+        Ok(value) => value,
+        Err(message) => {
+            warn!(
+                request_id,
+                "rejecting request without valid HTTP Basic Authentication"
+            );
+            return basic_auth_error(&message);
+        }
+    };
     let incoming_header_count = request.headers().len();
     let headers = forward_headers(request.headers());
     info!(
@@ -133,6 +220,7 @@ pub async fn handle(request: Request<Body>, config: Arc<Config>, client: Client)
             &path,
             &query,
             headers,
+            authorization,
             &client_request,
             tx.clone(),
         )
@@ -179,38 +267,11 @@ async fn stream_request(
     path: &str,
     query: &str,
     headers: HeaderMap,
+    authorization: HeaderValue,
     client_request: &str,
     tx: mpsc::Sender<Result<Bytes, ProxyError>>,
 ) -> Result<(), ProxyError> {
     info!(request_id, mode = pagination_mode(&config.pagination), array_path = %config.response.array_path, error_policy = error_policy_name(&config.response.error_policy), "starting paginated upstream request");
-    let username = match env::var(&config.target.username_env) {
-        Ok(value) => value,
-        Err(_) => {
-            error!(request_id, username_env = %config.target.username_env, "username environment variable is missing or invalid");
-            return Err(ProxyError::Config(format!(
-                "missing or invalid {}",
-                config.target.username_env
-            )));
-        }
-    };
-    let password = match env::var(&config.target.password_env) {
-        Ok(value) => value,
-        Err(_) => {
-            error!(request_id, password_env = %config.target.password_env, "password environment variable is missing or invalid");
-            return Err(ProxyError::Config(format!(
-                "missing or invalid {}",
-                config.target.password_env
-            )));
-        }
-    };
-    info!(
-        request_id,
-        username_env = %config.target.username_env,
-        password_env = %config.target.password_env,
-        username = %masked_credential(&username),
-        password = %masked_credential(&password),
-        "loaded outbound credential variables"
-    );
     let mut query_pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
         .into_owned()
         .collect();
@@ -261,7 +322,9 @@ async fn stream_request(
             build_url(&config.target.base_url, path, &query_pairs)?
         };
         info!(request_id, page_number, target_path = %path, query_parameter_count = query_pairs.len(), "dispatching upstream page request");
-        let mut request = client.get(&url).basic_auth(&username, Some(&password));
+        let mut request = client
+            .get(&url)
+            .header(http::header::AUTHORIZATION, authorization.clone());
         for (name, value) in &headers {
             request = request.header(name, value);
         }
@@ -285,7 +348,7 @@ async fn stream_request(
                 "upstream returned an unsuccessful HTTP status",
             );
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                error!(request_id, page_number, status = %status, username_env = %config.target.username_env, "upstream rejected configured credentials");
+                error!(request_id, page_number, status = %status, "upstream rejected client credentials");
                 return handle_error(
                     config,
                     tx,
@@ -425,7 +488,9 @@ async fn stream_request(
             PaginationConfig::NextLink { next_link_path } => {
                 next_url = match document.pointer(next_link_path) {
                     None | Some(Value::Null) => None,
-                    Some(Value::String(value)) => Some(value.clone()),
+                    Some(Value::String(value)) => {
+                        Some(validated_next_url(&config.target.base_url, value)?)
+                    }
                     _ => {
                         log_upstream_response_diagnostics(
                             request_id,
@@ -512,18 +577,67 @@ fn set_query(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
     pairs.push((key.into(), value.into()));
 }
 
+fn basic_authorization(headers: &HeaderMap) -> Result<HeaderValue, String> {
+    let header = headers
+        .get(http::header::AUTHORIZATION)
+        .ok_or_else(|| "HTTP Basic Authentication is required".to_string())?;
+    let value = header
+        .to_str()
+        .map_err(|_| "HTTP Basic Authentication is required".to_string())?;
+    let (scheme, payload) = value
+        .split_once(" ")
+        .ok_or_else(|| "HTTP Basic Authentication is required".to_string())?;
+    if !scheme.eq_ignore_ascii_case("basic") || payload.is_empty() {
+        return Err("HTTP Basic Authentication is required".to_string());
+    }
+    let decoded = BASE64_STANDARD
+        .decode(payload)
+        .map_err(|_| "HTTP Basic Authentication is required".to_string())?;
+    if !decoded.iter().any(|byte| *byte == 58) {
+        return Err("HTTP Basic Authentication is required".to_string());
+    }
+    Ok(header.clone())
+}
+
+fn basic_auth_error(message: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("content-type", "text/plain")
+        .header("www-authenticate", r#"Basic realm="api-pagination-proxy""#)
+        .body(Body::from(message.to_string()))
+        .unwrap()
+}
+
+fn is_sensitive_header(name: &http::HeaderName) -> bool {
+    let lower = name.as_str().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower.contains("auth")
+        || lower.contains("token")
+        || lower.contains("credential")
+}
+
+fn validated_next_url(base: &str, next: &str) -> Result<String, ProxyError> {
+    let base = Url::parse(base).map_err(|error| ProxyError::Config(error.to_string()))?;
+    let next = Url::parse(next)
+        .or_else(|_| base.join(next))
+        .map_err(|error| ProxyError::MissingNext(error.to_string()))?;
+    if next.scheme() != base.scheme()
+        || next.host_str() != base.host_str()
+        || next.port_or_known_default() != base.port_or_known_default()
+    {
+        return Err(ProxyError::UnsafeNextLink(next.to_string()));
+    }
+    Ok(next.to_string())
+}
+
 fn forward_headers(input: &HeaderMap) -> HeaderMap {
     input
         .iter()
         .filter(|(name, _)| {
-            let lower = name.as_str().to_ascii_lowercase();
-            lower != "host"
-                && lower != "authorization"
-                && lower != "proxy-authorization"
-                && lower != "accept-encoding"
-                && !lower.contains("auth")
-                && !lower.contains("token")
-                && !lower.contains("credential")
+            name.as_str() != "host"
+                && name.as_str() != "accept-encoding"
+                && !is_sensitive_header(name)
         })
         .fold(HeaderMap::new(), |mut output, (name, value)| {
             output.append(name, value.clone());
@@ -557,7 +671,11 @@ fn format_headers(headers: &HeaderMap) -> String {
         output.push_str("\n");
         output.push_str(name.as_str());
         output.push_str(": ");
-        output.push_str(value.to_str().unwrap_or("<non-UTF-8 header value>"));
+        if is_sensitive_header(name) {
+            output.push_str("<redacted>");
+        } else {
+            output.push_str(value.to_str().unwrap_or("<non-UTF-8 header value>"));
+        }
     }
     output
 }
@@ -636,11 +754,8 @@ fn error_summary(error: &ProxyError) -> String {
         ProxyError::Json(_) => "invalid upstream JSON".into(),
         ProxyError::MissingArray(path) => format!("missing array at JSON pointer {path:?}"),
         ProxyError::MissingNext(path) => format!("invalid next link at JSON pointer {path:?}"),
+        ProxyError::UnsafeNextLink(url) => format!("unsafe next-page link {url:?}"),
     }
-}
-
-fn masked_credential(value: &str) -> String {
-    format!("{}******", value.chars().take(3).collect::<String>())
 }
 
 fn split_document(document: &Value, pointer: &str) -> Result<(Bytes, Bytes), ProxyError> {
@@ -748,10 +863,33 @@ mod tests {
     }
 
     #[test]
-    fn masks_credentials_with_three_characters_and_six_asterisks() {
-        assert_eq!(masked_credential("username"), "use******");
-        assert_eq!(masked_credential("åßçdef"), "åßç******");
-        assert_eq!(masked_credential("ab"), "ab******");
+    fn accepts_and_redacts_basic_authentication() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+        let authorization = basic_authorization(&headers).unwrap();
+        assert_eq!(authorization, "Basic dXNlcjpwYXNz");
+        let formatted = format_headers(&headers);
+        assert!(formatted.contains("authorization: <redacted>"));
+        assert!(!formatted.contains("dXNlcjpwYXNz"));
+    }
+
+    #[test]
+    fn rejects_non_basic_authentication() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer secret".parse().unwrap());
+        assert!(basic_authorization(&headers).is_err());
+    }
+
+    #[test]
+    fn next_link_must_stay_on_the_target_origin() {
+        assert_eq!(
+            validated_next_url("https://example.test/api", "/next").unwrap(),
+            "https://example.test/next"
+        );
+        assert!(matches!(
+            validated_next_url("https://example.test/api", "https://other.test/next"),
+            Err(ProxyError::UnsafeNextLink(_))
+        ));
     }
 
     #[test]

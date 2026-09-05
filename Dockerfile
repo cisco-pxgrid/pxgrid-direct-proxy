@@ -6,6 +6,7 @@ COPY src ./src
 RUN cargo build --release
 
 FROM scratch
+WORKDIR /
 COPY --from=build /build/target/release/api-pagination-proxy /api-pagination-proxy
 # Keep the standard Alpine CA bundle in the scratch image for public HTTPS.
 # A private bundle can be bind-mounted at runtime; configure ca_bundle_path.

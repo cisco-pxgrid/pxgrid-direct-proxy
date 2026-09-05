@@ -1,14 +1,15 @@
 services:
   api-proxy:
     build: .
+    restart: unless-stopped
     ports:
       - "3030:3030"
     environment:
       RUST_LOG: info
-      SERVICENOW_USERNAME: ${SERVICENOW_USERNAME}
-      SERVICENOW_PASSWORD: ${SERVICENOW_PASSWORD}
     volumes:
       - ./config.yaml:/etc/api-proxy/config.yaml:ro
+      # Persist the generated local CA and server certificate.
+      - ./tls:/tls
       # Optional private CA bundle. Uncomment this and set ca_bundle_path in
       # config.yaml when the target is signed by a private CA.
       # - ./custom-ca-bundle.pem:/etc/ssl/certs/custom-ca-bundle.pem:ro

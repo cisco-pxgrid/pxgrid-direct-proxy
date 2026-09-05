@@ -1,74 +1,66 @@
 # API Pagination Proxy
 
-A deliberately small Rust HTTP proxy. It accepts inbound plaintext `GET` requests, preserves the path and query parameters, changes only the target server, adds outbound HTTP Basic Authentication from environment variables, and consolidates paginated JSON arrays into one streamed JSON document.
+A small Rust HTTPS proxy for paginated JSON APIs. Each client supplies HTTP Basic Authentication to the proxy; the proxy validates it and uses the same credentials for every request to the configured upstream origin while consolidating paginated JSON arrays into one streamed document.
 
 ## Configuration
 
-Copy the examples:
+Copy and edit the example:
 
 ```sh
 cp config.yaml.example config.yaml
-cp .env.example .env
 ```
 
-Set the real target URL and credentials. The inbound URL path is appended to `target.base_url`; query parameters are forwarded. In offset and page modes, the configured pagination parameters override inbound values.
+Set `target.base_url`, then configure `listen.tls.server_names` with every DNS name and IP address that clients use to reach the proxy. The inbound path is appended to `target.base_url`; ordinary query parameters are forwarded. In offset and page modes, configured pagination parameters override inbound values.
 
-`response.array_path` is an RFC 6901 JSON Pointer. For ServiceNow's `{ "result": [...] }`, use `/result`. The first successful response supplies the response shape; its configured array is streamed and replaced with the concatenated items from later pages.
+On its first start, the proxy creates `ca.pem`, `server.pem`, and `server-key.pem` in `listen.tls.certificate_directory`. The CA and server certificate are reused on later starts. Distribute only `ca.pem` to clients; keep the directory private because it contains the server private key. If the generated TLS material is incomplete, the service fails safely rather than replacing it.
+
+`response.array_path` is an RFC 6901 JSON Pointer. For ServiceNow responses shaped as `{ "result": [...] }`, use `/result`. The first successful response supplies the response shape; its configured array is replaced by the concatenated items from later pages.
 
 Pagination modes:
 
 - `offset`: increments the configured offset by `page_size`; stops when fewer than `page_size` items arrive.
-- `page`: increments the configured page number; stops when fewer than `page_size` items arrive.
-- `next_link`: follows the string at `next_link_path`; stops when it is absent or null. Absolute next links are supported.
+- `page`: increments the configured page number by one; stops when fewer than `page_size` items arrive.
+- `next_link`: follows the string at `next_link_path`; stops when it is absent or null. Relative and same-origin absolute links are supported. Cross-origin links are rejected so credentials cannot leave the configured upstream origin.
 
-`error_policy: terminate` reports a stream error after a later-page failure. `error_policy: complete` closes the JSON document with the data already received. HTTP headers are forwarded except `Host`, `Accept-Encoding`, and headers that look authentication-related (`Authorization`, proxy authorization, auth/token/credential names). The proxy always sends its own Basic Auth header and handles upstream compression itself.
-
-Missing or invalid credential environment variables are logged by name (never by value) and returned as request errors. Upstream `401 Unauthorized` and `403 Forbidden` responses are logged as authentication failures and always terminate the response; they are never converted into a successful partial response by `error_policy: complete`.
-
-If authentication fails before the first page produces data, the proxy returns a real HTTP `401` or `403` response. If it fails on a later page, the HTTP headers have already been sent, so the client receives a stream error and an incomplete response instead.
+The proxy accepts `GET` only. Clients must send one valid `Authorization: Basic ...` header. Missing or malformed credentials return `401` with a Basic challenge. Inbound headers are forwarded except `Host`, `Accept-Encoding`, and sensitive authentication, token, and credential headers. The inbound Basic header is handled separately and is the only credential sent upstream.
 
 ## Run locally
 
 ```sh
 cp config.yaml.example config.yaml
-cp .env.example .env
-set -a; . ./.env; set +a
-cargo run --release -- --config ./config.yaml
+cargo run --release
 
-# simple query
-curl 'http://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id&sysparm_limit=100000000'
-
-# more complex query
-curl 'http://192.168.1.216:3030/api/now/table/cmdb_ci_computer?sysparm_display_value=true&sysparm_exclude_reference_link=true&sysparm_no_count=true&sysparm_fields=sys_id,sys_created_by,sys_updated_by,sys_updated_on,operational_status,short_description,mac_address,department,model_id&sysparm_query=ORDERBY%20sys_updated_on^mac_address%20ISNOTEMPTY'
+# Trust the generated CA and send client credentials.
+curl --cacert tls/ca.pem -u username:password \
+  "https://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id&sysparm_limit=100000000"
 ```
-
-The binary defaults to `/etc/api-proxy/config.yaml` for the container image. When running it directly, point it at the local file with `-c` or `--config`:
-
-```sh
-cargo run --release -- --config /path/to/config.yaml
-# or, after building:
-./target/release/api-pagination-proxy --config /path/to/config.yaml
-```
-
-Run `cargo run -- --help` for the available CLI options.
 
 ## Docker
 
-Sample `.env` file is tailored for **1Password** as the credentials store. Sample commands use 1Passwords `op` utility to run securely:
-
 ```sh
-cp config.yaml.example config.yaml
-op run --env-file .env -- docker compose up --build
+docker compose up --build
 ```
 
-The runtime image is `scratch`. It contains the standard public CA bundle but no shell, package manager, or debugging tools. For a private CA, mount a PEM bundle and set `target.ca_bundle_path` to the mounted path.
+Compose persists generated TLS material in `./tls`. Add that directory to secure backups if clients depend on this proxy identity; deleting it creates a new CA and requires clients to trust the replacement `tls/ca.pem`.
+
+The runtime image is `scratch`. It contains the standard public CA bundle for outbound HTTPS but no shell or package manager. For a private upstream CA, mount a PEM bundle and set `target.ca_bundle_path` to the mounted path.
 
 ## Logging
 
-The proxy logs startup, inbound requests, header filtering counts, pagination mode, upstream page dispatch and status, page item counts, completion, and error-policy decisions. For operational troubleshooting, the username and password read from environment variables are logged as their first three characters followed by exactly six asterisks. On an upstream response error, it logs the complete inbound request details, complete upstream response headers, and the complete upstream payload wrapped at 60 characters per line. This can expose authorization headers, query values, and returned records; do not send these logs to a shared or untrusted destination. Set `RUST_LOG` to control verbosity; `debug` adds per-page diagnostics.
-
-The Compose example configures Docker's `json-file` driver with three rotating 10 MB files (`max-size: 10m`, `max-file: 3`).
+The service logs startup, inbound requests, header filtering counts, pagination mode, upstream page dispatch and status, page item counts, completion, and error-policy decisions. Authentication and token-like headers are redacted from diagnostic logs. Upstream error response headers and payloads can still contain sensitive application data, so keep logs in a trusted destination. Set `RUST_LOG` to control verbosity; `debug` adds per-page diagnostics.
 
 ## Scope and limitations
 
-The initial service supports GET only, one configured target, JSON responses, and one array to aggregate. It buffers each upstream page so it can validate and extract JSON, but does not buffer the complete result; items are sent to the caller as pages finish. The proxy must know the array location because generic JSON documents do not provide an unambiguous merge operation.
+The service supports GET only, one configured target, JSON responses, and one array to aggregate. It buffers each upstream page so it can validate and extract JSON, but does not buffer the complete result; items are sent to the caller as pages finish. The proxy must know the array location because generic JSON documents do not provide an unambiguous merge operation.
+
+
+## CrowdStrike Falcon
+
+Set `crowdstrike.enabled: true` in `config.yaml` to enable `GET /crowdstrike`. The caller supplies the CrowdStrike OAuth client ID and secret through HTTP Basic Authentication; the proxy exchanges them for a request-scoped OAuth token and does not save either value.
+
+```sh
+curl --cacert tls/ca.pem -u CROWDSTRIKE_CLIENT_ID:CROWDSTRIKE_CLIENT_SECRET \
+  https://localhost:3030/crowdstrike
+```
+
+The endpoint retrieves managed devices and each enabled optional enrichment, then returns the Python-compatible JSON object with streamed `endpoints` and `unmanaged` arrays. Optional APIs that respond with 400, 403, or 404 are marked unavailable and skipped. Other failures terminate the request. Configure a regional CrowdStrike cloud with `crowdstrike.base_url` and control optional calls through `crowdstrike.features`.

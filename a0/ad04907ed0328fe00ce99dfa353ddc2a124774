@@ -1,0 +1,25 @@
+README.md
+  s_4624def6fbfdc4::t_4134d0fff0bf2c 31,38
+  s_4624def6fbfdc4::t_7c8495f23e57e0 39
+src/main.rs
+  s_4624def6fbfdc4::t_eba384d0218ab2 85-86,88-89,92-94,96-97,104-105,107-111,113-116
+  s_4624def6fbfdc4::t_e6d820065bd384 34,40
+  s_4624def6fbfdc4::t_4134d0fff0bf2c 23,35-39,84,87,90-91,95,98-103,106,112,117-120
+  s_4624def6fbfdc4::t_33d92157fd02a5 121-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a0ad04907ed0328fe00ce99dfa353ddc2a124774",
+  "prompts": {},
+  "sessions": {
+    "s_4624def6fbfdc4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1cb20-9b7f-7ff3-8807-40896062d180",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Einar Nilsen-Nygaard <einarnn@gmail.com>"
+    }
+  }
+}

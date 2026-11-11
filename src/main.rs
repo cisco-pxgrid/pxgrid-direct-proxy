@@ -20,6 +20,7 @@ use tracing::{info, warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+    let (config_path, tls_directory) = config_path_from_args()?;
     if rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .is_err()
@@ -30,8 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let config = Arc::new(load_config("/etc/api-proxy/config.yaml")?);
-    info!(listen_address = %config.listen.address, target_base_url = %config.target.base_url, "loaded proxy configuration");
+    let config_path = config_path.to_string_lossy();
+    let mut config = load_config(&config_path)?;
+    if let Some(directory) = tls_directory {
+        config.listen.tls.certificate_directory = directory.to_string_lossy().into_owned();
+    }
+    let config = Arc::new(config);
+    info!(config_path = %config_path, listen_address = %config.listen.address, target_base_url = %config.target.base_url, "loaded proxy configuration");
     let mut builder = reqwest::Client::builder().use_rustls_tls();
     if let Some(path) = &config.target.ca_bundle_path {
         let bundle = std::fs::read(path)?;
@@ -73,6 +79,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(app.into_make_service())
         .await?;
     Ok(())
+}
+
+fn config_path_from_args() -> Result<(PathBuf, Option<PathBuf>), std::io::Error> {
+    let mut args = std::env::args_os().skip(1);
+    let mut config_path = None;
+    let mut tls_directory = None;
+
+    while let Some(arg) = args.next() {
+        if arg == "--config" || arg == "--tls-dir" {
+            let option = arg.to_string_lossy().into_owned();
+            let path = args.next().ok_or_else(|| {
+                std::io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("missing path after {option}; usage: api-pagination-proxy [--config PATH] [--tls-dir PATH]"),
+                )
+            })?;
+            let destination = if option == "--config" {
+                &mut config_path
+            } else {
+                &mut tls_directory
+            };
+            if destination.replace(PathBuf::from(path)).is_some() {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("{option} may only be specified once"),
+                ));
+            }
+        } else {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "unknown argument; usage: api-pagination-proxy [--config PATH] [--tls-dir PATH]",
+            ));
+        }
+    }
+
+    Ok((
+        config_path.unwrap_or_else(|| PathBuf::from("/etc/api-proxy/config.yaml")),
+        tls_directory,
+    ))
 }
 
 fn ensure_tls_material(

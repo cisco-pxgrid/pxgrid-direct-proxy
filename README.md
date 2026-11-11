@@ -28,12 +28,14 @@ The proxy accepts `GET` only. Clients must send one valid `Authorization: Basic 
 
 ```sh
 cp config.yaml.example config.yaml
-cargo run --release
+cargo run --release -- --config ./config.yaml --tls-dir ./tls
 
 # Trust the generated CA and send client credentials.
 curl --cacert tls/ca.pem -u username:password \
   "https://localhost:3030/api/now/table/cmdb_ci_computer?sysparm_fields=sys_id&sysparm_limit=100000000"
 ```
+
+`--config PATH` selects the YAML configuration file. If omitted, the proxy reads `/etc/api-proxy/config.yaml`. `--tls-dir PATH` overrides `listen.tls.certificate_directory`; if omitted, the YAML setting is used.
 
 ## Docker
 
